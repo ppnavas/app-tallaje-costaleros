@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 import io
 from datetime import datetime
@@ -15,38 +14,6 @@ es_movil = any(x in ua for x in ["iphone", "android", "mobile", "ipad"])
 
 # Configuración de página
 st.set_page_config(page_title="Tallaje de Costaleros", page_icon="logo.png", layout="wide", initial_sidebar_state="collapsed")
-
-components.html(
-    """
-    <script>
-        const nuevoTitulo = "Tallaje de Costaleros";
-        
-        // Función para cambiar el título
-        function cambiarTitulo() {
-            if (window.parent.document.title !== nuevoTitulo) {
-                window.parent.document.title = nuevoTitulo;
-            }
-        }
-
-        // Lo intenta al cargar
-        cambiarTitulo();
-
-        // Crea un observador para evitar que Streamlit lo cambie después
-        const observer = new MutationObserver((mutations) => {
-            cambiarTitulo();
-        });
-
-        const titleNode = window.parent.document.querySelector('title');
-        if (titleNode) {
-            observer.observe(titleNode, { childList: true });
-        }
-        
-        // Ejecuta la función periódicamente por seguridad
-        setInterval(cambiarTitulo, 1000);
-    </script>
-    """,
-    height=0,
-)
 
 año_actual = datetime.now().year
 
