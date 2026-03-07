@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import io
 from datetime import datetime
@@ -13,7 +14,16 @@ ua = st.context.headers.get("User-Agent", "").lower()
 es_movil = any(x in ua for x in ["iphone", "android", "mobile", "ipad"])
 
 # Configuración de página
-st.set_page_config(page_title="Tallaje de Costaleros", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Tallaje de Costaleros", page_icon="logo.png", layout="wide", initial_sidebar_state="collapsed")
+
+components.html(
+    """
+    <script>
+        window.parent.document.title = "Tallaje de Costaleros";
+    </script>
+    """,
+    height=0,
+)
 
 año_actual = datetime.now().year
 
