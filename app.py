@@ -19,7 +19,13 @@ st.set_page_config(page_title="Tallaje de Costaleros", page_icon="logo.png", lay
 components.html(
     """
     <script>
-        window.parent.document.title = "Tallaje de Costaleros";
+        function fixTitle() {
+            window.parent.document.title = "Tallaje de Costaleros";
+        }
+        // Lo intenta varias veces para asegurar que sobreescribe el de Streamlit
+        setTimeout(fixTitle, 500);
+        setTimeout(fixTitle, 2000);
+        setTimeout(fixTitle, 5000);
     </script>
     """,
     height=0,
