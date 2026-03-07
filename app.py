@@ -19,13 +19,30 @@ st.set_page_config(page_title="Tallaje de Costaleros", page_icon="logo.png", lay
 components.html(
     """
     <script>
-        function fixTitle() {
-            window.parent.document.title = "Tallaje de Costaleros";
+        const nuevoTitulo = "Tallaje de Costaleros";
+        
+        // Función para cambiar el título
+        function cambiarTitulo() {
+            if (window.parent.document.title !== nuevoTitulo) {
+                window.parent.document.title = nuevoTitulo;
+            }
         }
-        // Lo intenta varias veces para asegurar que sobreescribe el de Streamlit
-        setTimeout(fixTitle, 500);
-        setTimeout(fixTitle, 2000);
-        setTimeout(fixTitle, 5000);
+
+        // Lo intenta al cargar
+        cambiarTitulo();
+
+        // Crea un observador para evitar que Streamlit lo cambie después
+        const observer = new MutationObserver((mutations) => {
+            cambiarTitulo();
+        });
+
+        const titleNode = window.parent.document.querySelector('title');
+        if (titleNode) {
+            observer.observe(titleNode, { childList: true });
+        }
+        
+        // Ejecuta la función periódicamente por seguridad
+        setInterval(cambiarTitulo, 1000);
     </script>
     """,
     height=0,
