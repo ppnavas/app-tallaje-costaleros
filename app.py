@@ -268,39 +268,147 @@ with col2:
 
     # --- LÓGICA DE ANÁLISIS ---
     if btn_analizar:
-        df = st.session_state.df_titulares
-        izq = df[df['Preferencia de Hombro'].isin(['Izquierdo', 'Solo Izquierdo'])][['Nombre', 'Altura Hombro Izquierdo (cm)']].rename(columns={'Altura Hombro Izquierdo (cm)': 'Altura'})
-        der = df[df['Preferencia de Hombro'].isin(['Derecho', 'Solo Derecho'])][['Nombre', 'Altura Hombro Derecho (cm)']].rename(columns={'Altura Hombro Derecho (cm)': 'Altura'})
-        ambos = df[df['Preferencia de Hombro'] == 'Indiferente']
+        import itertools
+        df = st.session_state.df_titulares.copy()
         
-        for _, row in ambos.iterrows():
-            if len(izq) <= len(der): izq = pd.concat([izq, pd.DataFrame([{'Nombre': row['Nombre'], 'Altura': row['Altura Hombro Izquierdo (cm)']}])])
-            else: der = pd.concat([der, pd.DataFrame([{'Nombre': row['Nombre'], 'Altura': row['Altura Hombro Derecho (cm)']}])])
+        # Parche de seguridad: si un hombro está en blanco, copia el otro
+        df['Altura Hombro Izquierdo (cm)'] = pd.to_numeric(df['Altura Hombro Izquierdo (cm)'].astype(str).str.replace(',', '.'), errors='coerce')
+        df['Altura Hombro Derecho (cm)'] = pd.to_numeric(df['Altura Hombro Derecho (cm)'].astype(str).str.replace(',', '.'), errors='coerce')
+        df['Altura Hombro Izquierdo (cm)'] = df['Altura Hombro Izquierdo (cm)'].fillna(df['Altura Hombro Derecho (cm)']).fillna(0)
+        df['Altura Hombro Derecho (cm)'] = df['Altura Hombro Derecho (cm)'].fillna(df['Altura Hombro Izquierdo (cm)']).fillna(0)
         
-        izq = izq.sort_values(by='Altura', ascending=False).to_dict('records')
-        der = der.sort_values(by='Altura', ascending=False).to_dict('records')
+        # 1. Agrupar en filas por Altura Media
+        df['Altura_Media'] = (df['Altura Hombro Izquierdo (cm)'] + df['Altura Hombro Derecho (cm)']) / 2.0
+        pool = df.sort_values(by='Altura_Media', ascending=False).to_dict('records')
         
-        resultado = []
-        ptr_izq, ptr_der = 0, 0
         max_filas = max(capacidad_ext, capacidad_int)
+        asignaciones_por_varal = {v["Nombre"]: [] for v in varales_config}
         
         for fila in range(1, max_filas + 1):
+            huecos_fila = []
             for varal in varales_config:
-                asignar = False
-                if varal["Tipo"] == "Exterior":
-                    if fila <= capacidad_ext: asignar = True
-                else:
-                    mitad = capacidad_int // 2
-                    if fila <= mitad or fila > (max_filas - mitad): asignar = True
+                if varal["Tipo"] == "Exterior" and fila <= capacidad_ext:
+                    huecos_fila.append(varal)
+                elif varal["Tipo"] == "Interior" and (fila <= capacidad_int // 2 or fila > max_filas - capacidad_int // 2):
+                    huecos_fila.append(varal)
+            
+            req_total = len(huecos_fila)
+            if req_total == 0: continue
+            
+            req_vizq = sum(1 for h in huecos_fila if h["Lado"] == "Izquierdo")
+            req_vder = sum(1 for h in huecos_fila if h["Lado"] == "Derecho")
+            
+            # 2. Extraer los X portadores más altos
+            candidatos = []
+            pool_restante = []
+            temp_pool = pool.copy()
+            
+            while len(candidatos) < req_total and temp_pool:
+                necesarios = req_total - len(candidatos)
+                candidatos.extend(temp_pool[:necesarios])
+                temp_pool = temp_pool[necesarios:]
                 
-                if asignar:
-                    if varal["Lado"] == "Izquierdo" and ptr_der < len(der):
-                        resultado.append({'Varal': varal["Nombre"], 'Fila': fila, **der[ptr_der]})
-                        ptr_der += 1
-                    elif varal["Lado"] == "Derecho" and ptr_izq < len(izq):
-                        resultado.append({'Varal': varal["Nombre"], 'Fila': fila, **izq[ptr_izq]})
-                        ptr_izq += 1
+                solo_der = [c for c in candidatos if c['Preferencia de Hombro'] == 'Solo Derecho'] 
+                solo_izq = [c for c in candidatos if c['Preferencia de Hombro'] == 'Solo Izquierdo'] 
+                
+                while len(solo_der) > req_vizq:
+                    peor = solo_der[-1]
+                    candidatos.remove(peor)
+                    pool_restante.append(peor)
+                    solo_der.remove(peor)
+                
+                while len(solo_izq) > req_vder:
+                    peor = solo_izq[-1]
+                    candidatos.remove(peor)
+                    pool_restante.append(peor)
+                    solo_izq.remove(peor)
+                    
+            pool = pool_restante + temp_pool
+            pool.sort(key=lambda x: x['Altura_Media'], reverse=True) 
+            
+            # 3. COMPENSACIÓN MILIMÉTRICA Y FORMA DEL PASO (USANDO ALTURAS REALES)
+            best_diff = float('inf')
+            best_shape_score = -1
+            best_pref_score = -1
+            best_perm = None
+            
+            for perm in itertools.permutations(candidatos):
+                valid = True
+                sum_izq = 0
+                sum_der = 0
+                pref_score = 0
+                shape_score = 0
+                alturas_carga = {}
+                
+                for i, c in enumerate(perm):
+                    hueco = huecos_fila[i]
+                    lado = hueco['Lado']
+                    pref = c['Preferencia de Hombro']
+                    
+                    if pref == 'Solo Izquierdo' and lado == 'Izquierdo': valid = False; break
+                    if pref == 'Solo Derecho' and lado == 'Derecho': valid = False; break
+                    
+                    # Altura real en el hombro exacto de carga
+                    h_carga = c['Altura Hombro Derecho (cm)'] if lado == 'Izquierdo' else c['Altura Hombro Izquierdo (cm)']
+                    alturas_carga[hueco['Nombre']] = h_carga
+                    
+                    if lado == 'Izquierdo': sum_izq += h_carga
+                    else: sum_der += h_carga
+                        
+                    if pref == 'Derecho' and lado == 'Izquierdo': pref_score += 1
+                    if pref == 'Izquierdo' and lado == 'Derecho': pref_score += 1
 
+                if not valid: continue
+                
+                # REGLA DE ORO FÍSICA: El exterior debe ser más alto (o igual) que el interior en el mismo lado
+                if 'Varal Izquierdo Exterior' in alturas_carga and 'Varal Izquierdo Interior' in alturas_carga:
+                    if alturas_carga['Varal Izquierdo Exterior'] >= alturas_carga['Varal Izquierdo Interior']:
+                        shape_score += 1
+                        
+                if 'Varal Derecho Exterior' in alturas_carga and 'Varal Derecho Interior' in alturas_carga:
+                    if alturas_carga['Varal Derecho Exterior'] >= alturas_carga['Varal Derecho Interior']:
+                        shape_score += 1
+                
+                diff = abs(sum_izq - sum_der)
+                
+                # 1º Mantener la forma (Exterior > Interior) | 2º Nivelar pesos | 3º Gustos
+                if shape_score > best_shape_score:
+                    best_shape_score = shape_score
+                    best_diff = diff
+                    best_pref_score = pref_score
+                    best_perm = perm
+                elif shape_score == best_shape_score:
+                    if diff < best_diff - 0.1: 
+                        best_diff = diff
+                        best_pref_score = pref_score
+                        best_perm = perm
+                    elif abs(diff - best_diff) <= 0.1:
+                        if pref_score > best_pref_score:
+                            best_diff = diff
+                            best_pref_score = pref_score
+                            best_perm = perm
+
+            if best_perm is None: best_perm = candidatos
+            
+            for i, c in enumerate(best_perm):
+                asignaciones_por_varal[huecos_fila[i]["Nombre"]].append(c)
+
+        # 4. GUARDADO DIRECTO
+        resultado = []
+        for varal in varales_config:
+            nombre = varal["Nombre"]
+            lado = varal["Lado"]
+            tipo = varal["Tipo"]
+            costaleros_varal = asignaciones_por_varal[nombre]
+                
+            filas_validas = [f for f in range(1, max_filas + 1) if (tipo == "Exterior" and f <= capacidad_ext) or (tipo == "Interior" and (f <= capacidad_int // 2 or f > max_filas - capacidad_int // 2))]
+                    
+            for i, c in enumerate(costaleros_varal):
+                fila_real = filas_validas[i]
+                altura_real = c['Altura Hombro Derecho (cm)'] if lado == "Izquierdo" else c['Altura Hombro Izquierdo (cm)']
+                resultado.append({'Varal': nombre, 'Fila': fila_real, 'Nombre': c['Nombre'], 'Altura': str(altura_real).replace('.', ',')})
+
+        # --- GENERACIÓN DEL EXCEL ---
         columnas_nombres = [v["Nombre"] for v in varales_config]
         izq_e = [v["Nombre"] for v in varales_config if v["Lado"] == "Izquierdo" and v["Tipo"] == "Exterior"]
         izq_i = [v["Nombre"] for v in varales_config if v["Lado"] == "Izquierdo" and v["Tipo"] == "Interior"][::-1]
@@ -310,7 +418,7 @@ with col2:
         
         df_res = pd.DataFrame("", index=range(max_filas), columns=orden_final)
         for r in resultado:
-            df_res.at[r['Fila']-1, r['Varal']] = f"{r['Nombre']} ({str(r['Altura']).replace('.', ',')})"
+            df_res.at[r['Fila']-1, r['Varal']] = f"{r['Nombre']} ({r['Altura']})"
             
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
