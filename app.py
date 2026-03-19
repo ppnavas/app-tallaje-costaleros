@@ -45,8 +45,11 @@ else:
 # COLUMNA 1: MAX COSTALEROS Y PLANTILLA
 # ==========================================
 with col1:
-    st.markdown("#### Número máximo de costaleros")
+
+    st.markdown("#### Plantilla")
     st.write("")
+
+    st.markdown("###### Número máximo de costaleros")
     val_act_max = st.session_state.get("max_port", 60)
     paso_max = 1 if val_act_max % 2 != 0 else 2
 
@@ -58,17 +61,12 @@ with col1:
         key="max_port", 
         label_visibility="collapsed"
     )
-    if max_portadores % 2 != 0:
-        st.error("✖ &nbsp;&nbsp;&nbsp;El número máximo de costaleros debe ser par.")
-
-    st.divider()
-
-    st.markdown("#### Plantilla")
-    st.write("")
+    
+    st.write("")    
     
     # Condición para cambiar el mensaje
     if max_portadores % 2 != 0:
-        st.warning("⚠ &nbsp;&nbsp;&nbsp;Corrige el número de costaleros para poder descargar la plantilla.")
+        st.error("✖ &nbsp;&nbsp;&nbsp;El número máximo de costaleros debe ser par.")
     else:
         st.info("ⓘ &nbsp;&nbsp;&nbsp;Descarga esta plantilla y rellénala con los datos de cada costalero.")
 
