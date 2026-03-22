@@ -10,6 +10,7 @@ def reset_analisis():
     st.session_state.total_titulares = 0
     st.session_state.total_suplentes = 0
     st.session_state.df_titulares = None
+    st.session_state.df_suplentes = None
     st.session_state.last_max = 0
 
 # 1. Detección del dispositivo
@@ -31,6 +32,7 @@ if "num_asignados" not in st.session_state: st.session_state.num_asignados = 0
 if "total_titulares" not in st.session_state: st.session_state.total_titulares = 0
 if "total_suplentes" not in st.session_state: st.session_state.total_suplentes = 0
 if "df_titulares" not in st.session_state: st.session_state.df_titulares = None
+if "df_suplentes" not in st.session_state: st.session_state.df_suplentes = None
 
 if es_movil:
     col1 = st.container()
@@ -144,6 +146,7 @@ with col1:
             st.session_state.total_titulares = len(df_t)
             st.session_state.total_suplentes = len(df_s)
             st.session_state.df_titulares = df_t
+            st.session_state.df_suplentes = df_s
         except:
             st.session_state.total_titulares = 0
 
@@ -166,7 +169,7 @@ with col2:
 
     # BARRERA: Solo mostramos la configuración si hay archivo subido y detecta costaleros
     if st.session_state.df_titulares is None:
-        st.warning("⚠ &nbsp;&nbsp;&nbsp;Carga los datos para poder configurar el paso.")
+        st.info("ⓘ &nbsp;&nbsp;&nbsp;Carga los datos para acceder a la configuración.")
     elif total_t == 0:
         st.error("⚠ &nbsp;&nbsp;&nbsp;No se han detectado costaleros titulares en el archivo.")
     elif total_t % 2 != 0:
@@ -256,194 +259,15 @@ with col2:
                         varales_config.append({"Nombre": f"Varal {lado} Interior{sufijo}", "Lado": lado, "Capacidad": capacidad_int, "Tipo": "Interior"})
 
         st.write("")
-        st.write("")
     if st.session_state.df_titulares is None:
         pass # Mensaje manejado arriba
     elif not parametros_validos: 
         st.warning("⚠ &nbsp;&nbsp;&nbsp;Corrige los parámetros para poder analizar el archivo.")
     else: 
-        st.info("ⓘ &nbsp;&nbsp;&nbsp;Parámetros correctos. Pulsa 'Analizar'.")
+        st.success("✔ &nbsp;&nbsp;&nbsp;Parámetros correctos. Pulsa 'Analizar'.")
 
     btn_analizar = st.button("Analizar", use_container_width=True, disabled=(not parametros_validos or archivo is None))
 
-    # --- LÓGICA DE ANÁLISIS ---
-    if btn_analizar:
-        import itertools
-        df = st.session_state.df_titulares.copy()
-        
-        # Parche de seguridad: si un hombro está en blanco, copia el otro
-        df['Altura Hombro Izquierdo (cm)'] = pd.to_numeric(df['Altura Hombro Izquierdo (cm)'].astype(str).str.replace(',', '.'), errors='coerce')
-        df['Altura Hombro Derecho (cm)'] = pd.to_numeric(df['Altura Hombro Derecho (cm)'].astype(str).str.replace(',', '.'), errors='coerce')
-        df['Altura Hombro Izquierdo (cm)'] = df['Altura Hombro Izquierdo (cm)'].fillna(df['Altura Hombro Derecho (cm)']).fillna(0)
-        df['Altura Hombro Derecho (cm)'] = df['Altura Hombro Derecho (cm)'].fillna(df['Altura Hombro Izquierdo (cm)']).fillna(0)
-        
-        # 1. Agrupar en filas por Altura Media
-        df['Altura_Media'] = (df['Altura Hombro Izquierdo (cm)'] + df['Altura Hombro Derecho (cm)']) / 2.0
-        pool = df.sort_values(by='Altura_Media', ascending=False).to_dict('records')
-        
-        max_filas = max(capacidad_ext, capacidad_int)
-        asignaciones_por_varal = {v["Nombre"]: [] for v in varales_config}
-        
-        for fila in range(1, max_filas + 1):
-            huecos_fila = []
-            for varal in varales_config:
-                if varal["Tipo"] == "Exterior" and fila <= capacidad_ext:
-                    huecos_fila.append(varal)
-                elif varal["Tipo"] == "Interior" and (fila <= capacidad_int // 2 or fila > max_filas - capacidad_int // 2):
-                    huecos_fila.append(varal)
-            
-            req_total = len(huecos_fila)
-            if req_total == 0: continue
-            
-            req_vizq = sum(1 for h in huecos_fila if h["Lado"] == "Izquierdo")
-            req_vder = sum(1 for h in huecos_fila if h["Lado"] == "Derecho")
-            
-            # 2. Extraer los X portadores más altos
-            candidatos = []
-            pool_restante = []
-            temp_pool = pool.copy()
-            
-            while len(candidatos) < req_total and temp_pool:
-                necesarios = req_total - len(candidatos)
-                candidatos.extend(temp_pool[:necesarios])
-                temp_pool = temp_pool[necesarios:]
-                
-                solo_der = [c for c in candidatos if c['Preferencia de Hombro'] == 'Solo Derecho'] 
-                solo_izq = [c for c in candidatos if c['Preferencia de Hombro'] == 'Solo Izquierdo'] 
-                
-                while len(solo_der) > req_vizq:
-                    peor = solo_der[-1]
-                    candidatos.remove(peor)
-                    pool_restante.append(peor)
-                    solo_der.remove(peor)
-                
-                while len(solo_izq) > req_vder:
-                    peor = solo_izq[-1]
-                    candidatos.remove(peor)
-                    pool_restante.append(peor)
-                    solo_izq.remove(peor)
-                    
-            pool = pool_restante + temp_pool
-            pool.sort(key=lambda x: x['Altura_Media'], reverse=True) 
-            
-            # 3. COMPENSACIÓN MILIMÉTRICA Y FORMA DEL PASO (USANDO ALTURAS REALES)
-            best_diff = float('inf')
-            best_shape_score = -1
-            best_pref_score = -1
-            best_perm = None
-            
-            for perm in itertools.permutations(candidatos):
-                valid = True
-                sum_izq = 0
-                sum_der = 0
-                pref_score = 0
-                shape_score = 0
-                alturas_carga = {}
-                
-                for i, c in enumerate(perm):
-                    hueco = huecos_fila[i]
-                    lado = hueco['Lado']
-                    pref = c['Preferencia de Hombro']
-                    
-                    if pref == 'Solo Izquierdo' and lado == 'Izquierdo': valid = False; break
-                    if pref == 'Solo Derecho' and lado == 'Derecho': valid = False; break
-                    
-                    # Altura real en el hombro exacto de carga
-                    h_carga = c['Altura Hombro Derecho (cm)'] if lado == 'Izquierdo' else c['Altura Hombro Izquierdo (cm)']
-                    alturas_carga[hueco['Nombre']] = h_carga
-                    
-                    if lado == 'Izquierdo': sum_izq += h_carga
-                    else: sum_der += h_carga
-                        
-                    if pref == 'Derecho' and lado == 'Izquierdo': pref_score += 1
-                    if pref == 'Izquierdo' and lado == 'Derecho': pref_score += 1
-
-                if not valid: continue
-                
-                # REGLA DE ORO FÍSICA: El exterior debe ser más alto (o igual) que el interior en el mismo lado
-                if 'Varal Izquierdo Exterior' in alturas_carga and 'Varal Izquierdo Interior' in alturas_carga:
-                    if alturas_carga['Varal Izquierdo Exterior'] >= alturas_carga['Varal Izquierdo Interior']:
-                        shape_score += 1
-                        
-                if 'Varal Derecho Exterior' in alturas_carga and 'Varal Derecho Interior' in alturas_carga:
-                    if alturas_carga['Varal Derecho Exterior'] >= alturas_carga['Varal Derecho Interior']:
-                        shape_score += 1
-                
-                diff = abs(sum_izq - sum_der)
-                
-                # 1º Mantener la forma (Exterior > Interior) | 2º Nivelar pesos | 3º Gustos
-                if shape_score > best_shape_score:
-                    best_shape_score = shape_score
-                    best_diff = diff
-                    best_pref_score = pref_score
-                    best_perm = perm
-                elif shape_score == best_shape_score:
-                    if diff < best_diff - 0.1: 
-                        best_diff = diff
-                        best_pref_score = pref_score
-                        best_perm = perm
-                    elif abs(diff - best_diff) <= 0.1:
-                        if pref_score > best_pref_score:
-                            best_diff = diff
-                            best_pref_score = pref_score
-                            best_perm = perm
-
-            if best_perm is None: best_perm = candidatos
-            
-            for i, c in enumerate(best_perm):
-                asignaciones_por_varal[huecos_fila[i]["Nombre"]].append(c)
-
-        # 4. GUARDADO DIRECTO
-        resultado = []
-        for varal in varales_config:
-            nombre = varal["Nombre"]
-            lado = varal["Lado"]
-            tipo = varal["Tipo"]
-            costaleros_varal = asignaciones_por_varal[nombre]
-                
-            filas_validas = [f for f in range(1, max_filas + 1) if (tipo == "Exterior" and f <= capacidad_ext) or (tipo == "Interior" and (f <= capacidad_int // 2 or f > max_filas - capacidad_int // 2))]
-                    
-            for i, c in enumerate(costaleros_varal):
-                fila_real = filas_validas[i]
-                altura_real = c['Altura Hombro Derecho (cm)'] if lado == "Izquierdo" else c['Altura Hombro Izquierdo (cm)']
-                resultado.append({'Varal': nombre, 'Fila': fila_real, 'Nombre': c['Nombre'], 'Altura': str(altura_real).replace('.', ',')})
-
-        # --- GENERACIÓN DEL EXCEL ---
-        columnas_nombres = [v["Nombre"] for v in varales_config]
-        izq_e = [v["Nombre"] for v in varales_config if v["Lado"] == "Izquierdo" and v["Tipo"] == "Exterior"]
-        izq_i = [v["Nombre"] for v in varales_config if v["Lado"] == "Izquierdo" and v["Tipo"] == "Interior"][::-1]
-        der_i = [v["Nombre"] for v in varales_config if v["Lado"] == "Derecho" and v["Tipo"] == "Interior"]
-        der_e = [v["Nombre"] for v in varales_config if v["Lado"] == "Derecho" and v["Tipo"] == "Exterior"]
-        orden_final = izq_e + izq_i + der_i + der_e
-        
-        df_res = pd.DataFrame("", index=range(max_filas), columns=orden_final)
-        for r in resultado:
-            df_res.at[r['Fila']-1, r['Varal']] = f"{r['Nombre']} ({r['Altura']})"
-            
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_res.to_excel(writer, index=False, sheet_name='Cuadrante')
-            workbook, worksheet = writer.book, writer.sheets['Cuadrante']
-            header_fmt = workbook.add_format({'bold': True, 'bg_color': '#8583FF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_size': 14})
-            cell_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_size': 12})
-            
-            worksheet.set_row(0, 30)
-            for i, col in enumerate(df_res.columns):
-                worksheet.set_column(i, i, 40)
-                worksheet.write(0, i, col, header_fmt)
-                for f in range(len(df_res)):
-                    worksheet.set_row(f+1, 25)
-                    val = df_res.iloc[f, i]
-                    if val != "": worksheet.write(f+1, i, val, cell_fmt)
-            
-            if num_varales >= 4:
-                centro_fmt = workbook.add_format({'bg_color': "#BEBEBE", 'border': 1})
-                m_ini, m_fin = (capacidad_int // 2) + 1, max_filas - (capacidad_int // 2)
-                if m_ini <= m_fin: worksheet.merge_range(m_ini, 1, m_fin, len(orden_final)-2, "", centro_fmt)
-
-        st.session_state.excel_buffer = output.getvalue()
-        st.session_state.num_asignados = len(resultado)
-        st.session_state.analisis_completado = True
 
 # ==========================================
 # COLUMNA 3: RESULTADOS Y DESCARGA
@@ -452,12 +276,831 @@ with col3:
     st.markdown("#### Resultados")
     st.write("")
 
-    boton_descarga_bloqueado = not st.session_state.analisis_completado or archivo is None
+    mensaje_estado = st.empty()
 
     if st.session_state.analisis_completado and archivo is not None:
-        st.success("✔ &nbsp;&nbsp;&nbsp;¡Tallaje completado! Ya puedes descargar el cuadrante.")
+        mensaje_estado.success("✔ &nbsp;&nbsp;&nbsp;¡Tallaje completado! Ya puedes descargar el cuadrante.")
     else:
-        st.info("ⓘ &nbsp;&nbsp;&nbsp;Aún no se ha generado el cuadrante.")
+        mensaje_estado.info("ⓘ &nbsp;&nbsp;&nbsp;Pulsa 'Analizar' para generar el cuadrante.")
+
+    if btn_analizar:
+
+        mensaje_estado.empty()  # Limpiar mensaje anterior
+
+        with st.spinner("Generando cuadrante... Esto puede tardar unos segundos..."):
+            from itertools import combinations as icombs, permutations as iperms
+            import random, math
+    
+            df = st.session_state.df_titulares.copy()
+    
+            # ── 1. LIMPIEZA DE DATOS ──────────────────────────────────────────────
+            for col in ['Altura Hombro Izquierdo (cm)', 'Altura Hombro Derecho (cm)']:
+                df[col] = pd.to_numeric(
+                    df[col].astype(str).str.replace(',', '.'), errors='coerce'
+                )
+            df['Altura Hombro Izquierdo (cm)'] = (
+                df['Altura Hombro Izquierdo (cm)']
+                .fillna(df['Altura Hombro Derecho (cm)']).fillna(0)
+            )
+            df['Altura Hombro Derecho (cm)'] = (
+                df['Altura Hombro Derecho (cm)']
+                .fillna(df['Altura Hombro Izquierdo (cm)']).fillna(0)
+            )
+            df['Altura_Media'] = (
+                df['Altura Hombro Izquierdo (cm)'] + df['Altura Hombro Derecho (cm)']
+            ) / 2.0
+            pool = df.sort_values('Altura_Media', ascending=False).to_dict('records')
+    
+            max_filas = max(capacidad_ext, capacidad_int) if num_varales > 2 else capacidad_ext
+            asignaciones_por_varal = {v["Nombre"]: [] for v in varales_config}
+    
+            # ── 2. FUNCIONES AUXILIARES ───────────────────────────────────────────
+    
+            def h_carga(c, lado):
+                """Altura del hombro que realmente carga según el lado del varal."""
+                return (
+                    c['Altura Hombro Derecho (cm)']
+                    if lado == 'Izquierdo'
+                    else c['Altura Hombro Izquierdo (cm)']
+                )
+    
+            def hard_ok(c, lado):
+                """Devuelve False si la preferencia estricta prohíbe este lado."""
+                p = c['Preferencia de Hombro']
+                return (
+                    not (p == 'Solo Izquierdo' and lado == 'Izquierdo') and
+                    not (p == 'Solo Derecho'   and lado == 'Derecho')
+                )
+    
+            def pref_sat(c, lado):
+                """True si la preferencia blanda del costalero se satisface en este lado."""
+                p = c['Preferencia de Hombro']
+                return (
+                    (p == 'Derecho'        and lado == 'Izquierdo') or
+                    (p == 'Izquierdo'      and lado == 'Derecho')   or
+                    (p == 'Solo Derecho'   and lado == 'Izquierdo') or
+                    (p == 'Solo Izquierdo' and lado == 'Derecho')   or
+                    p == 'Indiferente'
+                )
+    
+            def fila_activa(fila, tipo):
+                """True si este tipo de varal participa en esta fila."""
+                if tipo == "Exterior":
+                    return fila <= capacidad_ext
+                return (
+                    fila <= capacidad_int // 2 or
+                    fila >  max_filas - capacidad_int // 2
+                )
+    
+            # ── 3. ESTRUCTURA DE POSICIONES Y FUNCIÓN OBJETIVO ────────────────────
+
+            # Construir lista de todas las posiciones y sus emparejamientos
+            all_positions = []   # [(varal_name, row_idx, lado, tipo)]
+            varal_filas = {}     # varal_name -> [fila1, fila2, ...]
+            for v in varales_config:
+                filas_v = [f for f in range(1, max_filas + 1) if fila_activa(f, v["Tipo"])]
+                varal_filas[v['Nombre']] = filas_v
+                for idx in range(len(filas_v)):
+                    all_positions.append((v['Nombre'], idx, v['Lado'], v['Tipo']))
+
+            # Emparejar posiciones izq/der del mismo tipo en la misma fila
+            pair_list = []  # [(varal_izq, varal_der, row_idx, fila)]
+            left_varals  = [v for v in varales_config if v['Lado'] == 'Izquierdo']
+            right_varals = [v for v in varales_config if v['Lado'] == 'Derecho']
+            for vl in left_varals:
+                for vr in right_varals:
+                    if vl['Tipo'] == vr['Tipo']:
+                        filas_l = varal_filas[vl['Nombre']]
+                        filas_r = varal_filas[vr['Nombre']]
+                        for idx in range(min(len(filas_l), len(filas_r))):
+                            pair_list.append((vl['Nombre'], vr['Nombre'], idx, filas_l[idx]))
+
+            # Mapa fila -> lista de (varal_name, row_idx, lado)
+            fila_positions = {}
+            for vname, idx, lado, tipo in all_positions:
+                f = varal_filas[vname][idx]
+                fila_positions.setdefault(f, []).append((vname, idx, lado))
+
+            # Lado y tipo de cada varal (cache)
+            varal_lado = {v['Nombre']: v['Lado'] for v in varales_config}
+            varal_tipo = {v['Nombre']: v['Tipo'] for v in varales_config}
+
+            # Filas consecutivas para verificar orden entre filas
+            filas_ordenadas = sorted(fila_positions.keys())
+
+            W_PAIR  = 15.0
+            W_ROW   = 10.0
+            W_PREF  = 2.0
+            W_GRAD  = 5.0
+            W_CROSS = 50.0  # Backup de la restricción dura cross-row
+            W_EXT   = 5.0   # Exteriores = más altos de la fila
+
+            def compute_J(grid):
+                """Función objetivo global. Menor = mejor."""
+                # J_pair: diferencia^2 en cada par de posiciones enfrentadas
+                j_pair = 0.0
+                for vl, vr, idx, fila in pair_list:
+                    cl, cr = grid[vl][idx], grid[vr][idx]
+                    diff = h_carga(cl, 'Izquierdo') - h_carga(cr, 'Derecho')
+                    j_pair += diff * diff
+
+                # J_row: varianza de alturas dentro de cada fila
+                j_row = 0.0
+                for f, pos_list in fila_positions.items():
+                    heights = [h_carga(grid[vn][ri], lado) for vn, ri, lado in pos_list]
+                    if len(heights) > 1:
+                        mean_h = sum(heights) / len(heights)
+                        j_row += sum((h - mean_h) ** 2 for h in heights) / len(heights)
+
+                # J_pref: preferencias blandas no satisfechas
+                j_pref = 0
+                for vname, idx, lado, tipo in all_positions:
+                    if not pref_sat(grid[vname][idx], lado):
+                        j_pref += 1
+
+                # J_grad: suavidad de alturas dentro de cada varal
+                # Solo entre filas físicamente adyacentes (ignora el hueco
+                # central de los varales interiores).
+                j_grad = 0.0
+                for v in varales_config:
+                    col = grid[v['Nombre']]
+                    lado = v['Lado']
+                    filas_v = varal_filas[v['Nombre']]
+                    for i in range(len(col) - 1):
+                        if filas_v[i + 1] - filas_v[i] != 1:
+                            continue
+                        h_curr = h_carga(col[i], lado)
+                        h_next = h_carga(col[i + 1], lado)
+                        diff = h_next - h_curr
+                        if diff > 0:
+                            j_grad += diff ** 2 * 10
+                        else:
+                            j_grad += diff ** 2
+
+                # J_cross: penalización por inversiones ENTRE filas (cross-varal)
+                # Nadie en fila N+1 debe ser más alto que nadie en fila N
+                j_cross = 0.0
+                for ri in range(len(filas_ordenadas) - 1):
+                    f_curr = filas_ordenadas[ri]
+                    f_next = filas_ordenadas[ri + 1]
+                    min_curr = min(h_carga(grid[vn][ri_idx], lado)
+                                for vn, ri_idx, lado in fila_positions[f_curr])
+                    max_next = max(h_carga(grid[vn][ri_idx], lado)
+                                for vn, ri_idx, lado in fila_positions[f_next])
+                    if max_next > min_curr:
+                        j_cross += (max_next - min_curr) ** 2
+
+                # J_ext: exteriores deben tener los costaleros más altos de cada fila
+                j_ext = 0.0
+                for f, pos_list in fila_positions.items():
+                    for side in ('Izquierdo', 'Derecho'):
+                        ext_h = [h_carga(grid[vn][ri], lado)
+                                for vn, ri, lado in pos_list
+                                if lado == side and varal_tipo[vn] == 'Exterior']
+                        int_h = [h_carga(grid[vn][ri], lado)
+                                for vn, ri, lado in pos_list
+                                if lado == side and varal_tipo[vn] == 'Interior']
+                        if ext_h and int_h:
+                            viol = max(int_h) - min(ext_h)
+                            if viol > 0:
+                                j_ext += viol ** 2
+
+                return (W_PAIR * j_pair + W_ROW * j_row + W_PREF * j_pref
+                        + W_GRAD * j_grad + W_CROSS * j_cross + W_EXT * j_ext)
+
+            def check_swap_ok(grid, v1, i1, lado1, v2, i2, lado2):
+                """True si el intercambio es factible (restricciones duras).
+                Solo verifica: 1) preferencias Solo, 2) orden cross-row.
+                La ordenación por columna es redundante porque cross-row la implica."""
+                c1, c2 = grid[v1][i1], grid[v2][i2]
+
+                # Restricciones de preferencia estricta
+                if not hard_ok(c2, lado1) or not hard_ok(c1, lado2):
+                    return False
+
+                h1_new = h_carga(c2, lado1)  # c2 va a posición (v1, i1)
+                h2_new = h_carga(c1, lado2)  # c1 va a posición (v2, i2)
+
+                # Restricción dura cross-row: nadie en fila N+1 más alto que nadie en fila N
+                fila1 = varal_filas[v1][i1]
+                fila2 = varal_filas[v2][i2]
+                affected = {fila1, fila2}
+                for ri in range(len(filas_ordenadas) - 1):
+                    f_c = filas_ordenadas[ri]
+                    f_n = filas_ordenadas[ri + 1]
+                    if f_c not in affected and f_n not in affected:
+                        continue
+                    heights_c, heights_n = [], []
+                    for vn, ri_idx, lado in fila_positions[f_c]:
+                        if vn == v1 and ri_idx == i1:
+                            heights_c.append(h1_new)
+                        elif vn == v2 and ri_idx == i2:
+                            heights_c.append(h2_new)
+                        else:
+                            heights_c.append(h_carga(grid[vn][ri_idx], lado))
+                    for vn, ri_idx, lado in fila_positions[f_n]:
+                        if vn == v1 and ri_idx == i1:
+                            heights_n.append(h1_new)
+                        elif vn == v2 and ri_idx == i2:
+                            heights_n.append(h2_new)
+                        else:
+                            heights_n.append(h_carga(grid[vn][ri_idx], lado))
+                    if max(heights_n) > min(heights_c):
+                        return False
+
+                return True
+
+            def check_rotate_ok(grid, positions_3):
+                """True si la rotación A->B->C->A es factible."""
+                (v1, i1, l1), (v2, i2, l2), (v3, i3, l3) = positions_3
+                c1, c2, c3 = grid[v1][i1], grid[v2][i2], grid[v3][i3]
+                # c3->pos1, c1->pos2, c2->pos3
+                if not hard_ok(c3, l1) or not hard_ok(c1, l2) or not hard_ok(c2, l3):
+                    return False
+
+                # Restricción dura cross-row para rotación
+                rotate_map = {(v1, i1): c3, (v2, i2): c1, (v3, i3): c2}
+                affected_r = {varal_filas[v1][i1], varal_filas[v2][i2], varal_filas[v3][i3]}
+                for ri in range(len(filas_ordenadas) - 1):
+                    f_c = filas_ordenadas[ri]
+                    f_n = filas_ordenadas[ri + 1]
+                    if f_c not in affected_r and f_n not in affected_r:
+                        continue
+
+                    def sim_h(vn, ri_idx, lado):
+                        key = (vn, ri_idx)
+                        if key in rotate_map:
+                            return h_carga(rotate_map[key], lado)
+                        return h_carga(grid[vn][ri_idx], lado)
+
+                    min_c = min(sim_h(vn, ri_idx, lado)
+                                for vn, ri_idx, lado in fila_positions[f_c])
+                    max_n = max(sim_h(vn, ri_idx, lado)
+                                for vn, ri_idx, lado in fila_positions[f_n])
+                    if max_n > min_c:
+                        return False
+
+                return True
+
+            # ── 4. ASIGNACIÓN ÓPTIMA POR FILA (FASE 1) ─────────────────────────────
+    
+            def asignar_fila(candidatos, huecos_fila):
+                """
+                Asigna los candidatos a los huecos de la fila de forma óptima.
+
+                Estrategia:
+                - Separa candidatos por restricción de hombro (forzados izq/der y libres).
+                - Enumera todas las formas de repartir los libres entre ambos lados.
+                - Para cada reparto, prueba TODAS las permutaciones de posiciones
+                (quién va a exterior vs interior) para encontrar el mejor emparejamiento.
+                - Elige la combinación que minimiza las diferencias por par enfrentado
+                y, en caso de empate, maximiza las preferencias blandas satisfechas.
+                """
+                huecos_izq = sorted(
+                    [h for h in huecos_fila if h['Lado'] == 'Izquierdo'],
+                    key=lambda h: 0 if h['Tipo'] == 'Exterior' else 1
+                )
+                huecos_der = sorted(
+                    [h for h in huecos_fila if h['Lado'] == 'Derecho'],
+                    key=lambda h: 0 if h['Tipo'] == 'Exterior' else 1
+                )
+                n_izq = len(huecos_izq)
+
+                forzados_izq = [c for c in candidatos if c['Preferencia de Hombro'] == 'Solo Derecho']
+                forzados_der = [c for c in candidatos if c['Preferencia de Hombro'] == 'Solo Izquierdo']
+                libres       = [c for c in candidatos
+                                if c['Preferencia de Hombro'] not in ('Solo Izquierdo', 'Solo Derecho')]
+                n_flex_izq   = n_izq - len(forzados_izq)
+
+                # Fallback de seguridad si la configuración es infactible
+                if not (0 <= n_flex_izq <= len(libres)):
+                    return {h['Nombre']: candidatos[i] for i, h in enumerate(huecos_fila)}
+
+                best_score = (float('inf'), float('inf'), float('inf'))
+                best_res   = None
+
+                for sel in icombs(range(len(libres)), n_flex_izq):
+                    sel_set = set(sel)
+                    g_izq = forzados_izq + [libres[i] for i in sel]
+                    g_der = forzados_der + [libres[i] for i in range(len(libres)) if i not in sel_set]
+
+                    # Probar TODAS las permutaciones de posiciones dentro de cada lado.
+                    # Prioridad: 1) min diferencia por par, 2) exterior=más alto, 3) preferencias.
+                    # Con 2 pos/lado = 4 combos, con 3 = 36, con 4 = 576.
+                    for perm_i in iperms(g_izq):
+                        for perm_d in iperms(g_der):
+                            pair_score = sum(
+                                (h_carga(gl, 'Izquierdo') - h_carga(gr, 'Derecho')) ** 2
+                                for gl, gr in zip(perm_i, perm_d)
+                            )
+
+                            ext_penalty = 0.0
+                            for huecos_s, perm_s, lado_s in [
+                                (huecos_izq, perm_i, 'Izquierdo'),
+                                (huecos_der, perm_d, 'Derecho')
+                            ]:
+                                e_h = [h_carga(c, lado_s) for h, c in zip(huecos_s, perm_s)
+                                    if h['Tipo'] == 'Exterior']
+                                i_h = [h_carga(c, lado_s) for h, c in zip(huecos_s, perm_s)
+                                    if h['Tipo'] == 'Interior']
+                                if e_h and i_h:
+                                    v = max(i_h) - min(e_h)
+                                    if v > 0:
+                                        ext_penalty += v ** 2
+
+                            prefs = (
+                                sum(pref_sat(c, 'Izquierdo') for c in perm_i) +
+                                sum(pref_sat(c, 'Derecho')   for c in perm_d)
+                            )
+
+                            score = (pair_score, ext_penalty, -prefs)
+                            if score < best_score:
+                                best_score = score
+                                best_res   = {}
+                                for h, c in zip(huecos_izq, perm_i): best_res[h['Nombre']] = c
+                                for h, c in zip(huecos_der, perm_d): best_res[h['Nombre']] = c
+
+                return best_res or {h['Nombre']: candidatos[i] for i, h in enumerate(huecos_fila)}
+
+    
+            # ── FASE 1 — ASIGNACIÓN FILA A FILA ──────────────────────────────────
+    
+            for fila in range(1, max_filas + 1):
+                huecos_fila = [v for v in varales_config if fila_activa(fila, v["Tipo"])]
+                if not huecos_fila:
+                    continue
+    
+                req_total = len(huecos_fila)
+                req_izq   = sum(1 for h in huecos_fila if h['Lado'] == 'Izquierdo')
+                req_der   = req_total - req_izq
+    
+                # Extracción de candidatos del pool respetando restricciones duras
+                # (misma lógica que el original para no alterar la selección de costaleros)
+                candidatos, pool_restante, temp_pool = [], [], pool.copy()
+                while len(candidatos) < req_total and temp_pool:
+                    necesarios = req_total - len(candidatos)
+                    candidatos.extend(temp_pool[:necesarios])
+                    temp_pool = temp_pool[necesarios:]
+    
+                    solo_der = [c for c in candidatos if c['Preferencia de Hombro'] == 'Solo Derecho']
+                    solo_izq = [c for c in candidatos if c['Preferencia de Hombro'] == 'Solo Izquierdo']
+    
+                    while len(solo_der) > req_izq:
+                        peor = solo_der.pop(-1)
+                        candidatos.remove(peor)
+                        pool_restante.append(peor)
+    
+                    while len(solo_izq) > req_der:
+                        peor = solo_izq.pop(-1)
+                        candidatos.remove(peor)
+                        pool_restante.append(peor)
+    
+                pool = sorted(
+                    pool_restante + temp_pool,
+                    key=lambda x: x['Altura_Media'], reverse=True
+                )
+    
+                res = asignar_fila(candidatos, huecos_fila)
+                for v in huecos_fila:
+                    asignaciones_por_varal[v['Nombre']].append(res[v['Nombre']])
+    
+            # ── 4b. REPARACIÓN CROSS-ROW ─────────────────────────────────────────
+            #
+            # Phase 1 ordena por Altura_Media, pero h_carga depende del lado.
+            # Esto puede crear violaciones cross-row. Las reparamos antes del SA
+            # intercambiando costaleros entre filas adyacentes.
+
+            grid = {vn: list(cs) for vn, cs in asignaciones_por_varal.items()}
+
+            for _repair_iter in range(100):
+                violation_found = False
+                for ri in range(len(filas_ordenadas) - 1):
+                    f_c = filas_ordenadas[ri]
+                    f_n = filas_ordenadas[ri + 1]
+                    pos_c = fila_positions[f_c]
+                    pos_n = fila_positions[f_n]
+                    h_c = [h_carga(grid[vn][idx], lado) for vn, idx, lado in pos_c]
+                    h_n = [h_carga(grid[vn][idx], lado) for vn, idx, lado in pos_n]
+
+                    if max(h_n) <= min(h_c):
+                        continue
+
+                    violation_found = True
+                    # Probar todos los swaps posibles entre las dos filas
+                    best_swap = None
+                    best_violation = max(h_n) - min(h_c)
+                    for a, (vn_a, idx_a, lado_a) in enumerate(pos_c):
+                        for b, (vn_b, idx_b, lado_b) in enumerate(pos_n):
+                            ca = grid[vn_a][idx_a]
+                            cb = grid[vn_b][idx_b]
+                            if not hard_ok(cb, lado_a) or not hard_ok(ca, lado_b):
+                                continue
+                            new_h_c = list(h_c)
+                            new_h_c[a] = h_carga(cb, lado_a)
+                            new_h_n = list(h_n)
+                            new_h_n[b] = h_carga(ca, lado_b)
+                            new_viol = max(max(new_h_n) - min(new_h_c), 0)
+                            if new_viol < best_violation:
+                                best_violation = new_viol
+                                best_swap = (vn_a, idx_a, vn_b, idx_b)
+
+                    if best_swap:
+                        va, ia, vb, ib = best_swap
+                        grid[va][ia], grid[vb][ib] = grid[vb][ib], grid[va][ia]
+
+                if not violation_found:
+                    break
+
+            # ── 5. FASE 2 — SIMULATED ANNEALING ─────────────────────────────────
+            #
+            # Optimización global con 6 tipos de movimiento:
+            #   A) Intercambio izq/der, misma fila, mismo tipo varal (35%)
+            #   B) Intercambio izq/der, misma fila, distinto tipo (10%)
+            #   C) Intercambio dentro del mismo varal, filas distintas (20%)
+            #   D) Intercambio cruzado: distinta fila Y distinto lado (10%)
+            #   E) Rotación de 3 posiciones (5%)
+            #   F) Intercambio mismo lado, misma fila, distinto varal ext↔int (20%)
+            #
+            # Se ejecutan 3 reinicios y se conserva la mejor solución.
+            N_pos = len(all_positions)
+
+            # Índices agrupados por tipo de movimiento (pre-calculados)
+            same_row_same_type = []  # para move A: izq/der, mismo tipo
+            same_row_diff_type = []  # para move B: izq/der, distinto tipo
+            same_varal_pairs = []    # para move C: mismo varal, filas distintas
+            cross_pairs = []         # para move D: distinta fila, distinto lado
+            same_side_same_row = []  # para move F: mismo lado, misma fila, distinto varal (ext↔int)
+
+            # Agrupar posiciones por fila
+            by_fila = {}
+            for pi, (vn, idx, lado, tipo) in enumerate(all_positions):
+                f = varal_filas[vn][idx]
+                by_fila.setdefault(f, []).append(pi)
+
+            for f, pis in by_fila.items():
+                for a in range(len(pis)):
+                    for b in range(a + 1, len(pis)):
+                        pa, pb = all_positions[pis[a]], all_positions[pis[b]]
+                        if pa[2] != pb[2]:  # lados distintos
+                            if pa[3] == pb[3]:  # mismo tipo
+                                same_row_same_type.append((pis[a], pis[b]))
+                            else:
+                                same_row_diff_type.append((pis[a], pis[b]))
+                        elif pa[0] != pb[0]:  # mismo lado, distinto varal (ext↔int)
+                            same_side_same_row.append((pis[a], pis[b]))
+
+            # Pares dentro del mismo varal
+            vname_to_indices = {}
+            for pi, (vn, idx, lado, tipo) in enumerate(all_positions):
+                vname_to_indices.setdefault(vn, []).append(pi)
+            for vn, pis in vname_to_indices.items():
+                for a in range(len(pis)):
+                    for b in range(a + 1, len(pis)):
+                        same_varal_pairs.append((pis[a], pis[b]))
+
+            # Pares cruzados (distinta fila Y distinto lado)
+            filas_sorted = sorted(by_fila.keys())
+            for fi_idx, f1 in enumerate(filas_sorted):
+                for f2 in filas_sorted[fi_idx + 1:]:
+                    for a in by_fila[f1]:
+                        for b in by_fila[f2]:
+                            if all_positions[a][2] != all_positions[b][2]:
+                                cross_pairs.append((a, b))
+
+            def do_swap(grid, pi_a, pi_b):
+                va, ia, la, _ = all_positions[pi_a]
+                vb, ib, lb, _ = all_positions[pi_b]
+                grid[va][ia], grid[vb][ib] = grid[vb][ib], grid[va][ia]
+
+            def copy_grid(g):
+                return {vn: list(cs) for vn, cs in g.items()}
+
+            best_grid = copy_grid(grid)
+            best_J = compute_J(grid)
+
+            SA_RESTARTS = 3
+            T0 = 10.0
+            T_MIN = 0.001
+            ALPHA = 0.97
+            ITERS_PER_T = max(N_pos * 5, 50)
+
+            for restart in range(SA_RESTARTS):
+                if restart > 0:
+                    grid = copy_grid(best_grid)
+
+                current_J = compute_J(grid)
+                rng = random.Random(42 + restart * 1000)
+                T = T0
+
+                while T > T_MIN:
+                    for _ in range(ITERS_PER_T):
+                        r = rng.random()
+
+                        # Seleccionar tipo de movimiento y par de posiciones
+                        pi_a = pi_b = -1
+                        is_rotate = False
+
+                        if r < 0.35 and same_row_same_type:
+                            pi_a, pi_b = rng.choice(same_row_same_type)
+                        elif r < 0.45 and same_row_diff_type:
+                            pi_a, pi_b = rng.choice(same_row_diff_type)
+                        elif r < 0.65 and same_varal_pairs:
+                            pi_a, pi_b = rng.choice(same_varal_pairs)
+                        elif r < 0.75 and cross_pairs:
+                            pi_a, pi_b = rng.choice(cross_pairs)
+                        elif r < 0.95 and same_side_same_row:
+                            pi_a, pi_b = rng.choice(same_side_same_row)
+                        elif N_pos >= 3:
+                            is_rotate = True
+                            tri = rng.sample(range(N_pos), 3)
+                            p0 = (all_positions[tri[0]][0], all_positions[tri[0]][1], all_positions[tri[0]][2])
+                            p1 = (all_positions[tri[1]][0], all_positions[tri[1]][1], all_positions[tri[1]][2])
+                            p2 = (all_positions[tri[2]][0], all_positions[tri[2]][1], all_positions[tri[2]][2])
+                        else:
+                            continue
+
+                        if is_rotate:
+                            if not check_rotate_ok(grid, (p0, p1, p2)):
+                                continue
+                            (v0, i0, _), (v1, i1, _), (v2, i2, _) = p0, p1, p2
+                            old_c0, old_c1, old_c2 = grid[v0][i0], grid[v1][i1], grid[v2][i2]
+                            grid[v0][i0], grid[v1][i1], grid[v2][i2] = old_c2, old_c0, old_c1
+                            new_J = compute_J(grid)
+                            delta = new_J - current_J
+                            if delta < 0 or rng.random() < math.exp(-delta / T):
+                                current_J = new_J
+                            else:
+                                grid[v0][i0], grid[v1][i1], grid[v2][i2] = old_c0, old_c1, old_c2
+                        else:
+                            if pi_a < 0:
+                                continue
+                            va, ia, la, _ = all_positions[pi_a]
+                            vb, ib, lb, _ = all_positions[pi_b]
+                            if not check_swap_ok(grid, va, ia, la, vb, ib, lb):
+                                continue
+                            do_swap(grid, pi_a, pi_b)
+                            new_J = compute_J(grid)
+                            delta = new_J - current_J
+                            if delta < 0 or rng.random() < math.exp(-delta / T):
+                                current_J = new_J
+                            else:
+                                do_swap(grid, pi_a, pi_b)
+
+                    T *= ALPHA
+
+                if current_J < best_J:
+                    best_J = current_J
+                    best_grid = copy_grid(grid)
+
+            grid = best_grid
+
+            # ── 6. FASE 3 — HILL CLIMBING DETERMINISTA ──────────────────────────
+            #
+            # Prueba todos los pares de posiciones y acepta cualquier intercambio
+            # que mejore J. Repite hasta que ningún swap mejore (óptimo local).
+
+            current_J = compute_J(grid)
+            improved = True
+            while improved:
+                improved = False
+                for i in range(N_pos):
+                    for j in range(i + 1, N_pos):
+                        vi, ii, li, _ = all_positions[i]
+                        vj, ij, lj, _ = all_positions[j]
+                        if not check_swap_ok(grid, vi, ii, li, vj, ij, lj):
+                            continue
+                        do_swap(grid, i, j)
+                        new_J = compute_J(grid)
+                        if new_J < current_J - 0.001:
+                            current_J = new_J
+                            improved = True
+                        else:
+                            do_swap(grid, i, j)
+
+            # Copiar resultado al diccionario original
+            for vn in asignaciones_por_varal:
+                asignaciones_por_varal[vn] = grid[vn]
+
+            # ── 7b. SUPLENTES — BUSCAR MEJOR TITULAR POR HOMBRO ────────────
+            suplentes_resultado = []
+            df_supl = st.session_state.df_suplentes
+            if df_supl is not None and len(df_supl) > 0:
+                df_supl = df_supl.copy()
+                for col_s in ['Altura Hombro Izquierdo (cm)', 'Altura Hombro Derecho (cm)']:
+                    df_supl[col_s] = pd.to_numeric(
+                        df_supl[col_s].astype(str).str.replace(',', '.'), errors='coerce')
+                df_supl['Altura Hombro Izquierdo (cm)'] = (
+                    df_supl['Altura Hombro Izquierdo (cm)']
+                    .fillna(df_supl['Altura Hombro Derecho (cm)']).fillna(0))
+                df_supl['Altura Hombro Derecho (cm)'] = (
+                    df_supl['Altura Hombro Derecho (cm)']
+                    .fillna(df_supl['Altura Hombro Izquierdo (cm)']).fillna(0))
+
+                titulares_por_lado = {'Izquierdo': [], 'Derecho': []}
+                for varal in varales_config:
+                    nombre_v, lado_v, tipo_v = varal['Nombre'], varal['Lado'], varal['Tipo']
+                    filas_v = [f for f in range(1, max_filas + 1) if fila_activa(f, tipo_v)]
+                    for idx_v, c in enumerate(asignaciones_por_varal[nombre_v]):
+                        pos_str = f"{nombre_v} - Fila {filas_v[idx_v]}"
+                        titulares_por_lado[lado_v].append((c, h_carga(c, lado_v), pos_str))
+
+                for _, supl in df_supl.iterrows():
+                    s = supl.to_dict()
+                    pref = s.get('Preferencia de Hombro', 'Indiferente')
+
+                    h_izq_s = str(s['Altura Hombro Izquierdo (cm)']).replace('.', ',')
+                    h_der_s = str(s['Altura Hombro Derecho (cm)']).replace('.', ',')
+                    
+                    # Guardamos el nombre limpio para mostrar, y las alturas para el tooltip
+                    nombre_display = s['Nombre']
+                    if pref == 'Solo Izquierdo':
+                        altura_msg = f"{h_izq_s} cm"
+                        titulo_msg = "Altura:"
+                    elif pref == 'Solo Derecho':
+                        altura_msg = f"{h_der_s} cm"
+                        titulo_msg = "Altura:"
+                    else:
+                        altura_msg = f"{h_izq_s} cm\n{h_der_s} cm"
+                        titulo_msg = "Alturas:"
+
+                    if pref == 'Solo Derecho':
+                        lados_s = ['Izquierdo']
+                    elif pref == 'Solo Izquierdo':
+                        lados_s = ['Derecho']
+                    else:
+                        lados_s = ['Izquierdo', 'Derecho']
+
+                    # Ahora guardamos tuplas: (Nombre_A_Mostrar, Mensaje_Altura)
+                    fila_data = {
+                        'Nombre': (nombre_display, titulo_msg, altura_msg),
+                        'sust_izq': ('', ''), 'pos_izq': '',
+                        'sust_der': ('', ''), 'pos_der': ''
+                    }
+
+                    for lado_s in lados_s:
+                        h_supl = h_carga(s, lado_s)
+                        mejor, mejor_diff, mejor_h, mejor_pos = None, float('inf'), 0, ''
+                        for titular, h_tit, p_str in titulares_por_lado[lado_s]:
+                            d = abs(h_supl - h_tit)
+                            if d < mejor_diff:
+                                mejor, mejor_diff, mejor_h, mejor_pos = titular, d, h_tit, p_str
+                        if mejor:
+                            h_str = str(mejor_h).replace('.', ',')
+                            # Separamos el nombre del titular y su altura
+                            nombre_tit = mejor['Nombre']
+                            msg_tit = f"{h_str} cm"
+                            
+                            if lado_s == 'Izquierdo':
+                                fila_data['sust_der'] = (nombre_tit, msg_tit)
+                                fila_data['pos_der'] = mejor_pos
+                            else:
+                                fila_data['sust_izq'] = (nombre_tit, msg_tit)
+                                fila_data['pos_izq'] = mejor_pos
+
+                    suplentes_resultado.append(fila_data)
+
+            # ── 7. GENERACIÓN DEL EXCEL ───────────────────────────────────────────
+    
+            resultado = []
+            for varal in varales_config:
+                nombre, lado, tipo = varal["Nombre"], varal["Lado"], varal["Tipo"]
+                filas_validas = [f for f in range(1, max_filas + 1) if fila_activa(f, tipo)]
+                for i, c in enumerate(asignaciones_por_varal[nombre]):
+                    resultado.append({
+                        'Varal'  : nombre,
+                        'Fila'   : filas_validas[i],
+                        'Nombre' : c['Nombre'],
+                        'Altura' : str(h_carga(c, lado)).replace('.', ',')
+                    })
+    
+            columnas_nombres = [v["Nombre"] for v in varales_config]
+            izq_e = [v["Nombre"] for v in varales_config if v["Lado"] == "Izquierdo" and v["Tipo"] == "Exterior"]
+            izq_i = [v["Nombre"] for v in varales_config if v["Lado"] == "Izquierdo" and v["Tipo"] == "Interior"][::-1]
+            der_i = [v["Nombre"] for v in varales_config if v["Lado"] == "Derecho"   and v["Tipo"] == "Interior"]
+            der_e = [v["Nombre"] for v in varales_config if v["Lado"] == "Derecho"   and v["Tipo"] == "Exterior"]
+            orden_final = izq_e + izq_i + der_i + der_e
+    
+            df_res = pd.DataFrame("", index=range(max_filas), columns=orden_final)
+            for r in resultado:
+                # Guardamos la tupla para extraer nombre y altura por separado
+                df_res.at[r['Fila'] - 1, r['Varal']] = (r['Nombre'], r['Altura'])
+    
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                workbook = writer.book
+                worksheet = workbook.add_worksheet('Titulares')
+                
+                # Formatos
+                titulo_fmt = workbook.add_format({'bold': True, 'bg_color': '#FF2B2B', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_size': 14})
+                header_fmt = workbook.add_format({'bold': True, 'bg_color': '#8583FF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_size': 13})
+                cell_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_size': 12})
+                index_fmt = workbook.add_format({'bold': True, 'bg_color': '#8583FF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_size': 13})
+                
+                # --- 1. TÍTULO PRINCIPAL (Fila 1) ---
+                worksheet.set_row(0, 35)
+                # Combinar desde la columna A hasta la última de los varales
+                worksheet.merge_range(0, 0, 0, len(orden_final) - 1, "Costaleros Titulares", titulo_fmt)
+                
+                # --- 2. CABECERAS DE VARALES E ÍNDICES (Fila 2) ---
+                worksheet.set_row(1, 30)
+                for i, col in enumerate(df_res.columns):
+                    worksheet.set_column(i, i, 40)
+                    worksheet.write(1, i, col, header_fmt)
+                
+                # Cabecera de la columna de números de fila (a la derecha) -> Totalmente en blanco
+                col_indices = len(orden_final)
+                worksheet.set_column(col_indices, col_indices, 5)
+                    
+                # --- 3. DATOS, MENSAJES INVISIBLES Y NÚMEROS DE FILA (Empiezan en Fila 3) ---
+                for f in range(len(df_res)):
+                    row_idx = f + 2  # Índice 2 en Excel es la Fila 3
+                    worksheet.set_row(row_idx, 25)
+                    
+                    for i, col in enumerate(df_res.columns):
+                        val = df_res.iloc[f, i]
+                        if val != "":
+                            nombre, altura = val
+                            # 1. Escribir solo el nombre (celda totalmente limpia)
+                            worksheet.write(row_idx, i, nombre, cell_fmt)
+                            
+                            # 2. Añadir el mensaje de entrada (Sin marca roja, aparece al hacer clic)
+                            worksheet.data_validation(row_idx, i, row_idx, i, {
+                                'validate': 'any',
+                                'input_title': 'Altura:',
+                                'input_message': f'{altura} cm'
+                            })
+                        else:
+                            worksheet.write_blank(row_idx, i, "", cell_fmt)
+                    
+                    # Escribir el número de fila a la derecha del todo
+                    worksheet.write(row_idx, col_indices, f + 1, index_fmt)
+                
+                # --- 4. BLOQUE GRIS CENTRAL ---
+                if num_varales >= 4:
+                    centro_fmt = workbook.add_format({'bg_color': "#BEBEBE", 'border': 1})
+                    m_ini = (capacidad_int // 2) + 2
+                    m_fin =  max_filas - (capacidad_int // 2) + 1
+                    if m_ini <= m_fin:
+                        worksheet.merge_range(m_ini, 1, m_fin, len(orden_final) - 2, "", centro_fmt)
+
+                # --- 5. HOJA DE SUPLENTES ---
+                if suplentes_resultado:
+                    ws_s = workbook.add_worksheet('Suplentes')
+                    ws_s.set_row(0, 35)
+                    ws_s.merge_range(0, 0, 0, 4, "Costaleros Suplentes", titulo_fmt)
+
+                    ws_s.set_row(1, 30)
+                    cabeceras_s = ["Nombre", "Sustituto Hombro Izquierdo", "Posición",
+                                   "Sustituto Hombro Derecho", "Posición"]
+                    anchos_s = [40, 40, 40, 40, 40]
+                    for i_s, (cab, ancho) in enumerate(zip(cabeceras_s, anchos_s)):
+                        ws_s.set_column(i_s, i_s, ancho)
+                        ws_s.write(1, i_s, cab, header_fmt)
+
+                    for i_s, d_s in enumerate(suplentes_resultado):
+                        row_s = i_s + 2
+                        ws_s.set_row(row_s, 25)
+                        
+                        # Col 0: Nombre Suplente
+                        nom_supl, titulo_supl, msg_supl = d_s['Nombre']
+                        ws_s.write(row_s, 0, nom_supl, cell_fmt)
+                        ws_s.data_validation(row_s, 0, row_s, 0, {
+                            'validate': 'any', 'input_title': titulo_supl, 'input_message': msg_supl
+                        })
+
+                        # Col 1: Sustituto H. Izq
+                        nom_tit_i, msg_tit_i = d_s['sust_izq']
+                        if nom_tit_i:
+                            ws_s.write(row_s, 1, nom_tit_i, cell_fmt)
+                            ws_s.data_validation(row_s, 1, row_s, 1, {
+                                'validate': 'any', 'input_title': 'Altura:', 'input_message': msg_tit_i
+                            })
+                        else:
+                            ws_s.write_blank(row_s, 1, "", cell_fmt)
+
+                        # Col 2: Posición Izq
+                        ws_s.write(row_s, 2, d_s['pos_izq'], cell_fmt)
+
+                        # Col 3: Sustituto H. Der
+                        nom_tit_d, msg_tit_d = d_s['sust_der']
+                        if nom_tit_d:
+                            ws_s.write(row_s, 3, nom_tit_d, cell_fmt)
+                            ws_s.data_validation(row_s, 3, row_s, 3, {
+                                'validate': 'any', 'input_title': 'Altura:', 'input_message': msg_tit_d
+                            })
+                        else:
+                            ws_s.write_blank(row_s, 3, "", cell_fmt)
+
+                        # Col 4: Posición Der
+                        ws_s.write(row_s, 4, d_s['pos_der'], cell_fmt)
+
+            st.session_state.excel_buffer       = output.getvalue()
+            st.session_state.num_asignados      = len(resultado)
+            st.session_state.analisis_completado = True
+
+        mensaje_estado.success("✔ &nbsp;&nbsp;&nbsp;¡Tallaje completado! Ya puedes descargar el cuadrante.")
+
+    boton_descarga_bloqueado = not st.session_state.analisis_completado or archivo is None
 
     st.download_button(
         label="Descargar", 
