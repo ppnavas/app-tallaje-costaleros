@@ -1033,16 +1033,24 @@ with col3:
                     lado_surplus = 'Izquierdo'
 
                 # Candidatos a quedarse: flexibles en el lado surplus
+                # Prioridad: 0=pref blanda satisfecha, 1=indiferente, 2=pref blanda no satisfecha
                 candidatos_stay = []
                 for c, lado in costaleros_con_lado:
                     if lado == lado_surplus and c['Preferencia de Hombro'] not in ('Solo Izquierdo', 'Solo Derecho'):
                         diff_hombros = abs(c['Altura Hombro Izquierdo (cm)'] - c['Altura Hombro Derecho (cm)'])
-                        candidatos_stay.append((diff_hombros, id(c), c))
+                        pref = c['Preferencia de Hombro']
+                        pref_ok = (pref == 'Derecho' and lado == 'Izquierdo') or (pref == 'Izquierdo' and lado == 'Derecho')
+                        if pref_ok:
+                            prioridad = 0
+                        elif pref == 'Indiferente':
+                            prioridad = 1
+                        else:
+                            prioridad = 2
+                        candidatos_stay.append((prioridad, diff_hombros, id(c), c))
 
-                # Los de menor diferencia entre hombros se quedan
-                candidatos_stay.sort(key=lambda x: x[0])
+                candidatos_stay.sort(key=lambda x: (x[0], x[1]))
                 for i in range(min(surplus, len(candidatos_stay))):
-                    stayers.add(id(candidatos_stay[i][2]))
+                    stayers.add(id(candidatos_stay[i][3]))
 
             # Construir pool de cambio de hombro
             cambio_pool = []
@@ -1256,6 +1264,19 @@ with col3:
                         if v['Lado'] != lado_original.get(c['Nombre'], v['Lado']):
                             n_cambios += 1
 
+                # 2b) Calidad de no-cambios: penalizar si los que no cambian tenían pref blanda no satisfecha
+                no_cambio_penalty = 0
+                for v in varales_config:
+                    for c in cand_grid[v['Nombre']]:
+                        if v['Lado'] == lado_original.get(c['Nombre'], v['Lado']):
+                            pref = c['Preferencia de Hombro']
+                            lado_princ = lado_original.get(c['Nombre'])
+                            pref_ok = (pref == 'Derecho' and lado_princ == 'Izquierdo') or (pref == 'Izquierdo' and lado_princ == 'Derecho')
+                            if pref in ('Derecho', 'Izquierdo') and not pref_ok:
+                                no_cambio_penalty += 2
+                            elif pref == 'Indiferente':
+                                no_cambio_penalty += 1
+
                 # 3) Violaciones ext/int
                 ext_viol = 0
                 for f, pos_list in cand_fpos.items():
@@ -1280,7 +1301,7 @@ with col3:
                         pair_diffs.append(abs(hl - hr))
                 avg_pair = sum(pair_diffs) / len(pair_diffs) if pair_diffs else 0
 
-                score = (cross_viol, -n_cambios, ext_viol, avg_pair)
+                score = (cross_viol, -n_cambios, no_cambio_penalty, ext_viol, avg_pair)
 
                 if best_score is None or score < best_score:
                     best_score = score
