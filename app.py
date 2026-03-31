@@ -1088,10 +1088,12 @@ with col3:
                 'W_GRAD': 3.0,
             }
 
-            # Mapa lado original de cada costalero (para contar cambios de hombro)
+            # Mapa lado y preferencia original de cada costalero
             lado_original = {}
+            pref_original = {}
             for c, lado in costaleros_con_lado:
                 lado_original[c['Nombre']] = lado
+                pref_original[c['Nombre']] = c['Preferencia de Hombro']
 
             N_CANDIDATES = 10
             best_candidate = None
@@ -1269,7 +1271,7 @@ with col3:
                 for v in varales_config:
                     for c in cand_grid[v['Nombre']]:
                         if v['Lado'] == lado_original.get(c['Nombre'], v['Lado']):
-                            pref = c['Preferencia de Hombro']
+                            pref = pref_original.get(c['Nombre'], 'Indiferente')
                             lado_princ = lado_original.get(c['Nombre'])
                             pref_ok = (pref == 'Derecho' and lado_princ == 'Izquierdo') or (pref == 'Izquierdo' and lado_princ == 'Derecho')
                             if pref in ('Derecho', 'Izquierdo') and not pref_ok:
@@ -1321,6 +1323,80 @@ with col3:
             cambio_h_carga = cambio_result[6]
             cambio_fila_positions = cambio_result[4]
             cambio_varal_filas = cambio_result[3]
+
+            # ── Post-procesado: intentar swaps para reducir BLANDA NO SAT ──
+            def _calc_score(g, fpos, hcfn):
+                filas_ord = sorted(fpos.keys())
+                cr = 0
+                for ri in range(len(filas_ord) - 1):
+                    fc, fn = filas_ord[ri], filas_ord[ri + 1]
+                    hc = [hcfn(g[vn][idx], lado) for vn, idx, lado in fpos[fc]]
+                    hn = [hcfn(g[vn][idx], lado) for vn, idx, lado in fpos[fn]]
+                    if max(hn) > min(hc): cr += 1
+                nc = 0
+                for v in varales_config:
+                    for c in g[v['Nombre']]:
+                        if v['Lado'] != lado_original.get(c['Nombre'], v['Lado']):
+                            nc += 1
+                ncp = 0
+                for v in varales_config:
+                    for c in g[v['Nombre']]:
+                        if v['Lado'] == lado_original.get(c['Nombre'], v['Lado']):
+                            p = pref_original.get(c['Nombre'], 'Indiferente')
+                            lp = lado_original.get(c['Nombre'])
+                            pok = (p == 'Derecho' and lp == 'Izquierdo') or (p == 'Izquierdo' and lp == 'Derecho')
+                            if p in ('Derecho', 'Izquierdo') and not pok: ncp += 2
+                            elif p == 'Indiferente': ncp += 1
+                ev = 0
+                for f, pl in fpos.items():
+                    for side in ('Izquierdo', 'Derecho'):
+                        eh = [hcfn(g[vn][ri], lado) for vn, ri, lado in pl
+                              if lado == side and any(v['Nombre'] == vn and v['Tipo'] == 'Exterior' for v in varales_config)]
+                        ih = [hcfn(g[vn][ri], lado) for vn, ri, lado in pl
+                              if lado == side and any(v['Nombre'] == vn and v['Tipo'] == 'Interior' for v in varales_config)]
+                        if eh and ih and max(ih) > min(eh): ev += 1
+                pd_list = []
+                for v in varales_config:
+                    if v['Lado'] != 'Izquierdo': continue
+                    vl, tipo = v['Nombre'], v['Tipo']
+                    vr = [vr['Nombre'] for vr in varales_config if vr['Lado'] == 'Derecho' and vr['Tipo'] == tipo][0]
+                    for idx in range(min(len(g[vl]), len(g[vr]))):
+                        pd_list.append(abs(hcfn(g[vl][idx], 'Izquierdo') - hcfn(g[vr][idx], 'Derecho')))
+                ap = sum(pd_list) / len(pd_list) if pd_list else 0
+                return (cr, -nc, ncp, ev, ap)
+
+            pre_score = _calc_score(cambio_grid, cambio_fila_positions, cambio_h_carga)
+
+            # Identificar no-cambios BLANDA NO SAT y candidatos a swap
+            _no_cambia_bad = []
+            _swap_targets = []
+            for v in varales_config:
+                for idx, c in enumerate(cambio_grid[v['Nombre']]):
+                    nombre = c['Nombre']
+                    lado_c = v['Lado']
+                    if lado_c == lado_original.get(nombre, lado_c):
+                        pref = pref_original[nombre]
+                        lp = lado_original[nombre]
+                        pok = (pref == 'Derecho' and lp == 'Izquierdo') or (pref == 'Izquierdo' and lp == 'Derecho')
+                        if pref in ('Derecho', 'Izquierdo') and not pok:
+                            _no_cambia_bad.append((v['Nombre'], idx, lado_c))
+                        elif pref not in ('Solo Derecho', 'Solo Izquierdo'):
+                            _swap_targets.append((v['Nombre'], idx, lado_c))
+                    else:
+                        pref = pref_original[nombre]
+                        if pref not in ('Solo Derecho', 'Solo Izquierdo'):
+                            _swap_targets.append((v['Nombre'], idx, lado_c))
+
+            for bad_vn, bad_idx, bad_lado in _no_cambia_bad:
+                for tgt_vn, tgt_idx, tgt_lado in _swap_targets:
+                    if bad_lado == tgt_lado:
+                        continue
+                    cambio_grid[bad_vn][bad_idx], cambio_grid[tgt_vn][tgt_idx] = cambio_grid[tgt_vn][tgt_idx], cambio_grid[bad_vn][bad_idx]
+                    new_score = _calc_score(cambio_grid, cambio_fila_positions, cambio_h_carga)
+                    if new_score <= pre_score and new_score[4] - pre_score[4] <= 0.1:
+                        pre_score = new_score
+                        break  # Aceptar swap
+                    cambio_grid[bad_vn][bad_idx], cambio_grid[tgt_vn][tgt_idx] = cambio_grid[tgt_vn][tgt_idx], cambio_grid[bad_vn][bad_idx]
 
             # Actualizar cambio_asignaciones desde cambio_grid
             for vn in cambio_asignaciones:
@@ -1616,8 +1692,11 @@ with col3:
                 leyenda_color_fmt = workbook.add_format({'bg_color': '#FFF9C4', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_size': 12})
                 leyenda_text_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_size': 12})
                 ws_c.merge_range(1, leyenda_col, 1, leyenda_col + 1, "Leyenda", header_fmt)
-                ws_c.write(2, leyenda_col, "", leyenda_color_fmt)
-                ws_c.write(2, leyenda_col + 1, "No cambia de hombro", leyenda_text_fmt)
+                leyenda_white_fmt = workbook.add_format({'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_size': 12})
+                ws_c.write(2, leyenda_col, "", leyenda_white_fmt)
+                ws_c.write(2, leyenda_col + 1, "SÍ cambia de hombro", leyenda_text_fmt)
+                ws_c.write(3, leyenda_col, "", leyenda_color_fmt)
+                ws_c.write(3, leyenda_col + 1, "NO cambia de hombro", leyenda_text_fmt)
 
             st.session_state.excel_buffer       = output.getvalue()
             st.session_state.num_asignados      = len(resultado)
