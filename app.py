@@ -5,6 +5,14 @@ from datetime import datetime
 from itertools import combinations as icombs, permutations as iperms
 import random, math, time
 
+def hard_ok(c, lado):
+    """Devuelve False si la preferencia estricta prohíbe este lado."""
+    p = c['Preferencia de Hombro']
+    return (
+        not (p == 'Solo Izquierdo' and lado == 'Izquierdo') and
+        not (p == 'Solo Derecho'   and lado == 'Derecho')
+    )
+
 def run_assignment_algorithm(pool, varales_config, capacidad_ext, capacidad_int, num_varales, max_filas,
                              custom_weights=None, relax_cross_row=False, seed_offset=0,
                              progress_callback=None):
@@ -20,14 +28,6 @@ def run_assignment_algorithm(pool, varales_config, capacidad_ext, capacidad_int,
             c['Altura Hombro Derecho (cm)']
             if lado == 'Izquierdo'
             else c['Altura Hombro Izquierdo (cm)']
-        )
-
-    def hard_ok(c, lado):
-        """Devuelve False si la preferencia estricta prohíbe este lado."""
-        p = c['Preferencia de Hombro']
-        return (
-            not (p == 'Solo Izquierdo' and lado == 'Izquierdo') and
-            not (p == 'Solo Derecho'   and lado == 'Derecho')
         )
 
     def pref_sat(c, lado):
@@ -267,7 +267,24 @@ def run_assignment_algorithm(pool, varales_config, capacidad_ext, capacidad_int,
         n_flex_izq   = n_izq - len(forzados_izq)
 
         if not (0 <= n_flex_izq <= len(libres)):
-            return {h['Nombre']: candidatos[i] for i, h in enumerate(huecos_fila)}
+            res_fallback = {}
+            used = set()
+            for h in huecos_fila:
+                best_c, best_idx = None, -1
+                for ci, c in enumerate(candidatos):
+                    if ci in used:
+                        continue
+                    if hard_ok(c, h['Lado']):
+                        best_c, best_idx = c, ci
+                        break
+                if best_c is None:
+                    for ci, c in enumerate(candidatos):
+                        if ci not in used:
+                            best_c, best_idx = c, ci
+                            break
+                res_fallback[h['Nombre']] = best_c
+                used.add(best_idx)
+            return res_fallback
 
         best_score = (float('inf'), float('inf'), float('inf'))
         best_res   = None
@@ -593,6 +610,11 @@ def run_assignment_algorithm(pool, varales_config, capacidad_ext, capacidad_int,
                         ci_v = grid[vn_i][idx_i]
                         cj_v = grid[vn_j][idx_j]
                         ck_v = grid[vn_k][idx_k]
+                        _, _, l_i, _ = all_main_pos[i]
+                        _, _, l_j, _ = all_main_pos[j]
+                        _, _, l_k, _ = all_main_pos[k]
+                        if not hard_ok(cj_v, l_i) or not hard_ok(ck_v, l_j) or not hard_ok(ci_v, l_k):
+                            continue
                         grid[vn_i][idx_i] = cj_v
                         grid[vn_j][idx_j] = ck_v
                         grid[vn_k][idx_k] = ci_v
@@ -607,6 +629,8 @@ def run_assignment_algorithm(pool, varales_config, capacidad_ext, capacidad_int,
 
     # Fase B: redistribución global por Altura_Media + bubble sort
     if _main_cross_cost(grid) > 0.001:
+        grid_backup = {vn: list(cs) for vn, cs in grid.items()}
+
         all_c = []
         for f in filas_ordenadas:
             for vn, idx, lado in fila_positions[f]:
@@ -614,6 +638,7 @@ def run_assignment_algorithm(pool, varales_config, capacidad_ext, capacidad_int,
         all_c.sort(key=lambda c: c['Altura_Media'], reverse=True)
 
         ci_pos = 0
+        hard_violated = False
         for f in filas_ordenadas:
             positions = fila_positions[f]
             n = len(positions)
@@ -625,31 +650,78 @@ def run_assignment_algorithm(pool, varales_config, capacidad_ext, capacidad_int,
                 for j in range(n):
                     if used[j]:
                         continue
+                    if not hard_ok(row_c[j], lado):
+                        continue
                     h = h_carga(row_c[j], lado)
                     if h > best_h:
                         best_h, best_j = h, j
+                if best_j == -1:
+                    hard_violated = True
+                    for j in range(n):
+                        if used[j]:
+                            continue
+                        h = h_carga(row_c[j], lado)
+                        if h > best_h:
+                            best_h, best_j = h, j
                 grid[vn][idx] = row_c[best_j]
                 used[best_j] = True
 
-        for _bs in range(1000):
-            if _main_cross_cost(grid) < 0.001:
+        if hard_violated:
+            grid = grid_backup
+        else:
+            for _bs in range(1000):
+                if _main_cross_cost(grid) < 0.001:
+                    break
+                swapped = False
+                for ri in range(len(filas_ordenadas) - 1):
+                    fc = filas_ordenadas[ri]
+                    fn = filas_ordenadas[ri + 1]
+                    mn = min(h_carga(grid[vn][idx], lado) for vn, idx, lado in fila_positions[fc])
+                    mx = max(h_carga(grid[vn][idx], lado) for vn, idx, lado in fila_positions[fn])
+                    if mx <= mn:
+                        continue
+                    pos_short = min(fila_positions[fc], key=lambda t: h_carga(grid[t[0]][t[1]], t[2]))
+                    pos_tall = max(fila_positions[fn], key=lambda t: h_carga(grid[t[0]][t[1]], t[2]))
+                    vn_a, idx_a, lado_a = pos_short
+                    vn_b, idx_b, lado_b = pos_tall
+                    if hard_ok(grid[vn_b][idx_b], lado_a) and hard_ok(grid[vn_a][idx_a], lado_b):
+                        grid[vn_a][idx_a], grid[vn_b][idx_b] = grid[vn_b][idx_b], grid[vn_a][idx_a]
+                        swapped = True
+                if not swapped:
+                    break
+
+    # Fase C: greedy global — probar TODOS los pares del grid
+    if _main_cross_cost(grid) > 0.001:
+        all_main_pos = []
+        for f in filas_ordenadas:
+            for vn, idx, lado in fila_positions[f]:
+                all_main_pos.append((vn, idx, lado, f))
+
+        for _ in range(500):
+            cc = _main_cross_cost(grid)
+            if cc < 0.001:
                 break
-            swapped = False
-            for ri in range(len(filas_ordenadas) - 1):
-                fc = filas_ordenadas[ri]
-                fn = filas_ordenadas[ri + 1]
-                mn = min(h_carga(grid[vn][idx], lado) for vn, idx, lado in fila_positions[fc])
-                mx = max(h_carga(grid[vn][idx], lado) for vn, idx, lado in fila_positions[fn])
-                if mx <= mn:
-                    continue
-                pos_short = min(fila_positions[fc], key=lambda t: h_carga(grid[t[0]][t[1]], t[2]))
-                pos_tall = max(fila_positions[fn], key=lambda t: h_carga(grid[t[0]][t[1]], t[2]))
-                vn_a, idx_a, _ = pos_short
-                vn_b, idx_b, _ = pos_tall
-                grid[vn_a][idx_a], grid[vn_b][idx_b] = grid[vn_b][idx_b], grid[vn_a][idx_a]
-                swapped = True
-            if not swapped:
+            best_swap, best_cost = None, cc
+            for i in range(len(all_main_pos)):
+                for j in range(i + 1, len(all_main_pos)):
+                    vn_a, idx_a, la, fa = all_main_pos[i]
+                    vn_b, idx_b, lb, fb = all_main_pos[j]
+                    if fa == fb:
+                        continue
+                    ca, cb = grid[vn_a][idx_a], grid[vn_b][idx_b]
+                    if not hard_ok(cb, la) or not hard_ok(ca, lb):
+                        continue
+                    grid[vn_a][idx_a], grid[vn_b][idx_b] = cb, ca
+                    nc = _main_cross_cost(grid)
+                    if nc < best_cost - 0.001:
+                        best_cost = nc
+                        best_swap = (vn_a, idx_a, vn_b, idx_b)
+                    grid[vn_a][idx_a], grid[vn_b][idx_b] = ca, cb
+            if not best_swap:
                 break
+            va, ia, vb, ib = best_swap
+            grid[va][ia], grid[vb][ib] = grid[vb][ib], grid[va][ia]
+
 
     # Copiar resultado al diccionario original
     for vn in asignaciones_por_varal:
@@ -1145,6 +1217,8 @@ with col3:
                             if fa == fb:
                                 continue
                             ca, cb = cand_grid[vn_a][idx_a], cand_grid[vn_b][idx_b]
+                            if not hard_ok(cb, la) or not hard_ok(ca, lb):
+                                continue
                             cand_grid[vn_a][idx_a], cand_grid[vn_b][idx_b] = cb, ca
                             nc = _crc(cand_grid)
                             if nc < bc - 0.001:
@@ -1174,6 +1248,8 @@ with col3:
                             if fa == fb:
                                 continue
                             ca, cb = cand_grid[vn_a][idx_a], cand_grid[vn_b][idx_b]
+                            if not hard_ok(cb, la) or not hard_ok(ca, lb):
+                                continue
                             cand_grid[vn_a][idx_a], cand_grid[vn_b][idx_b] = cb, ca
                             nc = _crc(cand_grid)
                             if nc < bc - 0.001:
@@ -1197,10 +1273,12 @@ with col3:
                             if i == j: continue
                             for k in range(len(all_cpos)):
                                 if k == i or k == j: continue
-                                vi, ii, _, _ = all_cpos[i]
-                                vj, ij, _, _ = all_cpos[j]
-                                vk, ik, _, _ = all_cpos[k]
+                                vi, ii, li, _ = all_cpos[i]
+                                vj, ij, lj, _ = all_cpos[j]
+                                vk, ik, lk, _ = all_cpos[k]
                                 ci_v, cj_v, ck_v = cand_grid[vi][ii], cand_grid[vj][ij], cand_grid[vk][ik]
+                                if not hard_ok(cj_v, li) or not hard_ok(ck_v, lj) or not hard_ok(ci_v, lk):
+                                    continue
                                 cand_grid[vi][ii], cand_grid[vj][ij], cand_grid[vk][ik] = cj_v, ck_v, ci_v
                                 if _crc(cand_grid) < cb4 - 0.001:
                                     imp = True
@@ -1227,9 +1305,16 @@ with col3:
                             bj, bh = -1, -1.0
                             for j in range(n):
                                 if used[j]: continue
+                                if not hard_ok(row_c[j], lado): continue
                                 h = cand_hcarga(row_c[j], lado)
                                 if h > bh:
                                     bh, bj = h, j
+                            if bj == -1:
+                                for j in range(n):
+                                    if used[j]: continue
+                                    h = cand_hcarga(row_c[j], lado)
+                                    if h > bh:
+                                        bh, bj = h, j
                             cand_grid[vn][idx] = row_c[bj]
                             used[bj] = True
                     for _ in range(1000):
@@ -1242,10 +1327,11 @@ with col3:
                             if mx <= mn: continue
                             ps = min(cand_fpos[fc], key=lambda t: cand_hcarga(cand_grid[t[0]][t[1]], t[2]))
                             pt = max(cand_fpos[fn], key=lambda t: cand_hcarga(cand_grid[t[0]][t[1]], t[2]))
-                            va, ia, _ = ps
-                            vb, ib, _ = pt
-                            cand_grid[va][ia], cand_grid[vb][ib] = cand_grid[vb][ib], cand_grid[va][ia]
-                            sw = True
+                            va, ia, la = ps
+                            vb, ib, lb = pt
+                            if hard_ok(cand_grid[vb][ib], la) and hard_ok(cand_grid[va][ia], lb):
+                                cand_grid[va][ia], cand_grid[vb][ib] = cand_grid[vb][ib], cand_grid[va][ia]
+                                sw = True
                         if not sw: break
 
                 # ── Evaluar este candidato según prioridades lexicográficas ──
