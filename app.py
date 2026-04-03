@@ -86,8 +86,8 @@ def run_assignment_algorithm(pool, varales_config, capacidad_ext, capacidad_int,
     # Filas consecutivas para verificar orden entre filas
     filas_ordenadas = sorted(fila_positions.keys())
 
-    W_PAIR  = 15.0
-    W_ROW   = 10.0
+    W_PAIR  = 20.0
+    W_ROW   = 8.0
     W_PREF  = 2.0
     W_GRAD  = 5.0
     W_CROSS = 50.0  # Backup de la restricción dura cross-row
@@ -1289,12 +1289,16 @@ with col3:
 
                 # Fase 5: redistribución global + bubble sort
                 if _crc(cand_grid) > 0.001:
+                    crc_before_5 = _crc(cand_grid)
+                    grid_backup_5 = {vn: list(cs) for vn, cs in cand_grid.items()}
+
                     all_c = []
                     for f in cand_filas_ord:
                         for vn, idx, lado in cand_fpos[f]:
                             all_c.append(cand_grid[vn][idx])
                     all_c.sort(key=lambda c: c['Altura_Media'], reverse=True)
                     ci_p = 0
+                    hard_violated_5 = False
                     for f in cand_filas_ord:
                         positions = cand_fpos[f]
                         n = len(positions)
@@ -1310,6 +1314,7 @@ with col3:
                                 if h > bh:
                                     bh, bj = h, j
                             if bj == -1:
+                                hard_violated_5 = True
                                 for j in range(n):
                                     if used[j]: continue
                                     h = cand_hcarga(row_c[j], lado)
@@ -1317,22 +1322,28 @@ with col3:
                                         bh, bj = h, j
                             cand_grid[vn][idx] = row_c[bj]
                             used[bj] = True
-                    for _ in range(1000):
-                        if _crc(cand_grid) < 0.001: break
-                        sw = False
-                        for ri in range(len(cand_filas_ord) - 1):
-                            fc, fn = cand_filas_ord[ri], cand_filas_ord[ri + 1]
-                            mn = min(cand_hcarga(cand_grid[vn][idx], lado) for vn, idx, lado in cand_fpos[fc])
-                            mx = max(cand_hcarga(cand_grid[vn][idx], lado) for vn, idx, lado in cand_fpos[fn])
-                            if mx <= mn: continue
-                            ps = min(cand_fpos[fc], key=lambda t: cand_hcarga(cand_grid[t[0]][t[1]], t[2]))
-                            pt = max(cand_fpos[fn], key=lambda t: cand_hcarga(cand_grid[t[0]][t[1]], t[2]))
-                            va, ia, la = ps
-                            vb, ib, lb = pt
-                            if hard_ok(cand_grid[vb][ib], la) and hard_ok(cand_grid[va][ia], lb):
-                                cand_grid[va][ia], cand_grid[vb][ib] = cand_grid[vb][ib], cand_grid[va][ia]
-                                sw = True
-                        if not sw: break
+
+                    if hard_violated_5:
+                        cand_grid = grid_backup_5
+                    else:
+                        for _ in range(1000):
+                            if _crc(cand_grid) < 0.001: break
+                            sw = False
+                            for ri in range(len(cand_filas_ord) - 1):
+                                fc, fn = cand_filas_ord[ri], cand_filas_ord[ri + 1]
+                                mn = min(cand_hcarga(cand_grid[vn][idx], lado) for vn, idx, lado in cand_fpos[fc])
+                                mx = max(cand_hcarga(cand_grid[vn][idx], lado) for vn, idx, lado in cand_fpos[fn])
+                                if mx <= mn: continue
+                                ps = min(cand_fpos[fc], key=lambda t: cand_hcarga(cand_grid[t[0]][t[1]], t[2]))
+                                pt = max(cand_fpos[fn], key=lambda t: cand_hcarga(cand_grid[t[0]][t[1]], t[2]))
+                                va, ia, la = ps
+                                vb, ib, lb = pt
+                                if hard_ok(cand_grid[vb][ib], la) and hard_ok(cand_grid[va][ia], lb):
+                                    cand_grid[va][ia], cand_grid[vb][ib] = cand_grid[vb][ib], cand_grid[va][ia]
+                                    sw = True
+                            if not sw: break
+                        if _crc(cand_grid) > crc_before_5:
+                            cand_grid = grid_backup_5
 
                 # ── Evaluar este candidato según prioridades lexicográficas ──
 
@@ -1515,8 +1526,8 @@ with col3:
                     s = supl.to_dict()
                     pref = s.get('Preferencia de Hombro', 'Indiferente')
 
-                    h_izq_s = str(s['Altura Hombro Izquierdo (cm)']).replace('.', ',')
-                    h_der_s = str(s['Altura Hombro Derecho (cm)']).replace('.', ',')
+                    h_izq_s = str(round(s['Altura Hombro Izquierdo (cm)'], 2)).replace('.', ',')
+                    h_der_s = str(round(s['Altura Hombro Derecho (cm)'], 2)).replace('.', ',')
                     
                     # Guardamos el nombre limpio para mostrar, y las alturas para el tooltip
                     nombre_display = s['Nombre']
@@ -1552,7 +1563,7 @@ with col3:
                             if d < mejor_diff:
                                 mejor, mejor_diff, mejor_h, mejor_pos = titular, d, h_tit, p_str
                         if mejor:
-                            h_str = str(mejor_h).replace('.', ',')
+                            h_str = str(round(mejor_h, 2)).replace('.', ',')
                             # Separamos el nombre del titular y su altura
                             nombre_tit = mejor['Nombre']
                             msg_tit = f"{h_str} cm"
@@ -1577,9 +1588,9 @@ with col3:
                         'Varal'  : nombre,
                         'Fila'   : filas_validas[i],
                         'Nombre' : c['Nombre'],
-                        'Altura' : str(h_carga(c, lado)).replace('.', ',')
+                        'Altura' : str(round(h_carga(c, lado), 2)).replace('.', ',')
                     })
-    
+
             columnas_nombres = [v["Nombre"] for v in varales_config]
             izq_e = [v["Nombre"] for v in varales_config if v["Lado"] == "Izquierdo" and v["Tipo"] == "Exterior"]
             izq_i = [v["Nombre"] for v in varales_config if v["Lado"] == "Izquierdo" and v["Tipo"] == "Interior"][::-1]
@@ -1601,7 +1612,7 @@ with col3:
                         'Varal'  : nombre,
                         'Fila'   : filas_validas[i],
                         'Nombre' : c['Nombre'],
-                        'Altura' : str(cambio_h_carga(c, lado)).replace('.', ',')
+                        'Altura' : str(round(cambio_h_carga(c, lado), 2)).replace('.', ',')
                     })
 
             df_cambio = pd.DataFrame("", index=range(max_filas), columns=orden_final)
